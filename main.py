@@ -2,16 +2,12 @@ import os
 from pathlib import Path
 
 import yaml
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-# Load .env
-load_dotenv()
-
 app = FastAPI()
 
-# Allow CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,7 +16,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Default configuration
 DEFAULTS = {
     "port": 8000,
     "workers": 1,
@@ -31,7 +26,7 @@ DEFAULTS = {
 
 
 def to_bool(value):
-    return str(value).lower() in ("true", "1", "yes", "on")
+    return str(value).strip().lower() in ("true", "1", "yes", "on")
 
 
 def coerce(key, value):
@@ -43,25 +38,23 @@ def coerce(key, value):
 
 
 def load_yaml():
-    filename = "config.development.yaml"
-
-    if not Path(filename).exists():
+    path = Path("config.development.yaml")
+    if not path.exists():
         return {}
-
-    with open(filename, "r") as f:
-        data = yaml.safe_load(f) or {}
-
-    return data
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
 
 
 @app.get("/effective-config")
 def effective_config(set: list[str] = Query(default=[])):
     config = DEFAULTS.copy()
 
-    # YAML layer
+    # Layer 2 - YAML
     config.update(load_yaml())
 
-    # .env / OS environment
+    # Layer 3 - .env ONLY
+    env_file = dotenv_values(".env")
+
     mapping = {
         "APP_PORT": "port",
         "APP_WORKERS": "workers",
@@ -72,18 +65,21 @@ def effective_config(set: list[str] = Query(default=[])):
     }
 
     for env_name, key in mapping.items():
-        value = os.getenv(env_name)
-        if value is not None:
-            config[key] = coerce(key, value)
+        if env_name in env_file:
+            config[key] = coerce(key, env_file[env_name])
 
-    # CLI overrides (?set=key=value)
+    # Layer 4 - OS Environment
+    for env_name, key in mapping.items():
+        if env_name in os.environ:
+            config[key] = coerce(key, os.environ[env_name])
+
+    # Layer 5 - CLI overrides
     for item in set:
         if "=" not in item:
             continue
         key, value = item.split("=", 1)
         config[key] = coerce(key, value)
 
-    # Mask secret
     config["api_key"] = "****"
 
     return config
